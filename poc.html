@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Umkreissuche – PoC (Leaflet + OSM + Nominatim)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    #app { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
+    #sidebar { padding: 12px; overflow: auto; border-right: 1px solid #ddd; }
+    #map { width: 100%; height: 100%; }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; margin: 0 0 12px; }
+    legend { font-weight: 600; }
+    label { display:block; margin: 8px 0 4px; }
+    input[type="text"]{ width:100%; padding:8px; box-sizing:border-box; }
+    input[type="number"], input[type="range"]{ width:100%; }
+    button { padding: 8px 10px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; }
+    .row { display: flex; gap: 8px; }
+    .muted { color: #666; font-size: 0.9em; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #ddd; border-radius:999px; margin-right:6px; }
+    .addr-list { margin:0; padding-left: 18px; }
+    .addr-list li { margin: 4px 0; }
+    .inside { color: #0a7a0a; font-weight: 600; }
+    .outside { color: #777; }
+    .error { color: #b00020; }
+    .hr { border-top:1px dashed #ddd; margin:10px 0; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <fieldset>
+      <legend>Umkreis</legend>
+      <label for="radius">Radius (Meter): <span id="radiusValue" class="pill">3000</span></label>
+      <input id="radius" type="range" min="100" max="50000" step="100" value="3000">
+      <div class="muted">Ziehe den Regler oder tippe einen Wert ein.</div>
+      <label for="radiusNum" class="muted">Direkteingabe</label>
+      <input id="radiusNum" type="number" min="100" max="50000" step="100" value="3000">
+      <div class="hr"></div>
+      <button id="locateBtn">Mein Standort bestimmen</button>
+      <div id="locMsg" class="muted" style="margin-top:6px;"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Adressen</legend>
+      <label for="newAddr">Neue Adresse hinzufügen</label>
+      <input id="newAddr" type="text" placeholder="z. B. Unter den Linden 77, Berlin">
+      <div class="row">
+        <button id="addBtn">Adresse speichern</button>
+        <button id="clearBtn" title="Alle gespeicherten Adressen löschen">Alles löschen</button>
+      </div>
+      <div id="addMsg" class="muted" style="margin-top:6px;"></div>
+      <div class="hr"></div>
+      <div class="muted">Gespeicherte Adressen (<span id="addrCount">0</span>):</div>
+      <ul id="addrList" class="addr-list"></ul>
+      <div class="hr"></div>
+      <div class="row">
+        <button id="exportBtn">Export JSON</button>
+        <label for="importFile" style="align-self:center;">Import</label>
+        <input id="importFile" type="file" accept=".json">
+      </div>
+      <div class="muted" style="margin-top:6px;">Daten werden in deinem Browser (localStorage) gehalten.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Treffer</legend>
+      <div id="stats" class="muted">0 innerhalb • 0 außerhalb</div>
+    </fieldset>
+
+    <div id="error" class="error"></div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""
+></script>
+<script>
+/** -------------------------
+ *  Konfiguration / Seed-Daten
+ *  -------------------------
+ *  Ersetze SEED_ADDRESSES durch deine 3–45 Adressen.
+ */
+const SEED_ADDRESSES = [
+  "Brandenburger Tor, Berlin",
+  "Marienplatz, München",
+  "Domplatz, Köln",
+  "Neuer Wall 1, Hamburg"
+];
+// Name für localStorage Keys
+const LS_KEYS = {
+  ADDRS: "poc_umkreis_addresses_v1", // Array von {id, address, lat, lon}
+  USER:  "poc_umkreis_user_v1"       // { lat, lon }
+};
+
+// Nominatim Basis-URL (nur PoC; bitte fair nutzen!)
+const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
+
+/** ------------- Utilities ------------- */
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function loadAddresses() {
+  const raw = localStorage.getItem(LS_KEYS.ADDRS);
+  return raw ? JSON.parse(raw) : [];
+}
+function saveAddresses(list) {
+  localStorage.setItem(LS_KEYS.ADDRS, JSON.stringify(list));
+}
+function getUserLoc() {
+  const raw = localStorage.getItem(LS_KEYS.USER);
+  return raw ? JSON.parse(raw) : null;
+}
+function setUserLoc(lat, lon) {
+  localStorage.setItem(LS_KEYS.USER, JSON.stringify({lat, lon}));
+}
+
+function haversineMeters(a, b) {
+  // Leaflet hat distanceTo, aber das hier ist nützlich außerhalb der Karte
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const s = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+/** ------------- Geocoding ------------- */
+async function geocode(address) {
+  // Nominatim Richtlinien: Bitte eine klare Referer-Domain haben (beim lokalen Test ist es dein file://-Pfad).
+  // Für produktive Nutzung besser: API mit Key (OpenCage/Mapbox/Google) oder ein kleiner Server-Proxy + Caching.
+  const params = new URLSearchParams({
+    q: address,
+    format: "jsonv2",
+    limit: "1",
+    addressdetails: "0"
+  });
+  const url = `${NOMINATIM_URL}?${params.toString()}`;
+  const res = await fetch(url, { headers: { /* Browser setzt User-Agent/Referer. */ }});
+  if (!res.ok) throw new Error("Geocoding fehlgeschlagen (" + res.status + ")");
+  const data = await res.json();
+  if (!data || !data[0]) throw new Error("Keine Treffer für Adresse");
+  return { lat: +data[0].lat, lon: +data[0].lon };
+}
+
+/** ------------- Map Setup ------------- */
+let map, userMarker, radiusCircle, markersLayer;
+
+function initMap() {
+  map = L.map('map').setView([52.52, 13.405], 6); // Start: Deutschland
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Demo'
+  }).addTo(map);
+
+  markersLayer = L.layerGroup().addTo(map);
+}
+
+function setUserOnMap(lat, lon) {
+  if (!userMarker) {
+    userMarker = L.marker([lat, lon], { title: "Mein Standort" })
+      .addTo(map)
+      .bindPopup("Mein Standort");
+  } else {
+    userMarker.setLatLng([lat, lon]);
+  }
+  const radius = +$("#radius").value;
+  drawRadius(lat, lon, radius);
+}
+
+function drawRadius(lat, lon, meters) {
+  if (!radiusCircle) {
+    radiusCircle = L.circle([lat, lon], { radius: meters, fillOpacity: 0.1 });
+    radiusCircle.addTo(map);
+  } else {
+    radiusCircle.setLatLng([lat, lon]);
+    radiusCircle.setRadius(meters);
+  }
+}
+
+/** ------------- UI Bindings ------------- */
+function syncRadiusInputs() {
+  const r = +$("#radius").value;
+  $("#radiusValue").textContent = r;
+  $("#radiusNum").value = r;
+}
+function setRadiusFromNum() {
+  const r = +$("#radiusNum").value || 1000;
+  $("#radius").value = r;
+  syncRadiusInputs();
+  refresh();
+}
+
+/** ------------- App Logic ------------- */
+
+async function ensureSeedLoaded() {
+  let addrs = loadAddresses();
+  if (addrs.length) return; // schon vorhanden
+  // Seed-Adressen einfügen und geokodieren (mit einfachem Delay, um freundlich zu sein)
+  const list = [];
+  for (const a of SEED_ADDRESSES) {
+    try {
+      const geo = await geocode(a);
+      list.push({ id: uid(), address: a, ...geo });
+      await new Promise(r => setTimeout(r, 800)); // freundlich throttlen
+    } catch (e) {
+      console.warn("Seed-Geocoding fehlgeschlagen:", a, e);
+    }
+  }
+  saveAddresses(list);
+}
+
+function renderAddressList(inRangeIds = new Set()) {
+  const ul = $("#addrList");
+  ul.innerHTML = "";
+  const list = loadAddresses();
+  $("#addrCount").textContent = list.length;
+
+  for (const it of list) {
+    const li = document.createElement("li");
+    const inRange = inRangeIds.has(it.id);
+    li.innerHTML = `
+      <span class="${inRange ? "inside" : "outside"}">
+        ${inRange ? "●" : "○"}
+      </span>
+      ${it.address}
+      <span class="muted">(${it.lat.toFixed(5)}, ${it.lon.toFixed(5)})</span>
+      <button data-id="${it.id}" class="delBtn" style="float:right;">✕</button>
+    `;
+    ul.appendChild(li);
+  }
+  // Delete-Handler
+  $$(".delBtn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-id");
+      const list = loadAddresses().filter(x => x.id !== id);
+      saveAddresses(list);
+      refresh();
+    });
+  });
+}
+
+function renderMarkers(inRangeIds = new Set()) {
+  markersLayer.clearLayers();
+  const list = loadAddresses();
+  for (const it of list) {
+    const m = L.circleMarker([it.lat, it.lon], {
+      radius: 7,
+      color: inRangeIds.has(it.id) ? "#2e7d32" : "#777",
+      weight: 2
+    });
+    m.bindPopup(`<b>${it.address}</b><br/>${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}`);
+    markersLayer.addLayer(m);
+  }
+}
+
+function updateStats(inCount, outCount) {
+  $("#stats").textContent = `${inCount} innerhalb • ${outCount} außerhalb`;
+}
+
+function fitBoundsToContent() {
+  const bounds = L.latLngBounds([]);
+  if (userMarker) bounds.extend(userMarker.getLatLng());
+  if (markersLayer && markersLayer.getLayers().length) {
+    markersLayer.getLayers().forEach(l => bounds.extend(l.getLatLng()));
+  }
+  if (bounds.isValid()) {
+    map.fitBounds(bounds.pad(0.2));
+  }
+}
+
+function refresh() {
+  $("#error").textContent = "";
+  const user = getUserLoc();
+  const r = +$("#radius").value;
+  syncRadiusInputs();
+
+  if (user) {
+    setUserOnMap(user.lat, user.lon);
+  }
+
+  const list = loadAddresses();
+  let inCount = 0, outCount = 0;
+  const inRangeIds = new Set();
+
+  if (user && list.length) {
+    for (const it of list) {
+      const d = haversineMeters(user, { lat: it.lat, lon: it.lon });
+      if (d <= r) { inCount++; inRangeIds.add(it.id); } else { outCount++; }
+    }
+  } else {
+    outCount = list.length;
+  }
+
+  renderMarkers(inRangeIds);
+  renderAddressList(inRangeIds);
+  updateStats(inCount, outCount);
+}
+
+/** ------------- Event Listeners ------------- */
+window.addEventListener("DOMContentLoaded", async () => {
+  initMap();
+
+  // Seed laden (nur beim allerersten Mal)
+  await ensureSeedLoaded();
+
+  // Gepeicherte User-Pos laden
+  const u = getUserLoc();
+  if (u) setUserOnMap(u.lat, u.lon);
+
+  refresh();
+  fitBoundsToContent();
+
+  // Radius
+  $("#radius").addEventListener("input", () => { syncRadiusInputs(); refresh(); });
+  $("#radiusNum").addEventListener("change", setRadiusFromNum);
+
+  // Standort bestimmen
+  $("#locateBtn").addEventListener("click", () => {
+    $("#locMsg").textContent = "Versuche, deinen Standort zu bestimmen…";
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude, longitude } = pos.coords;
+        setUserLoc(latitude, longitude);
+        setUserOnMap(latitude, longitude);
+        fitBoundsToContent();
+        $("#locMsg").textContent = `Standort gesetzt: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+        refresh();
+      },
+      err => {
+        $("#locMsg").textContent = "Standort abgelehnt oder nicht verfügbar.";
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  });
+
+  // Adresse hinzufügen
+  $("#addBtn").addEventListener("click", async () => {
+    const addr = $("#newAddr").value.trim();
+    if (!addr) return;
+    $("#addMsg").textContent = "Geokodiere…";
+    try {
+      const { lat, lon } = await geocode(addr);
+      const list = loadAddresses();
+      list.push({ id: uid(), address: addr, lat, lon });
+      saveAddresses(list);
+      $("#newAddr").value = "";
+      $("#addMsg").textContent = "Gespeichert.";
+      refresh();
+      fitBoundsToContent();
+    } catch (e) {
+      $("#addMsg").textContent = "Fehler: " + e.message;
+    } finally {
+      setTimeout(() => { $("#addMsg").textContent = ""; }, 2500);
+    }
+  });
+
+  // Alles löschen
+  $("#clearBtn").addEventListener("click", () => {
+    if (!confirm("Wirklich alle Adressen löschen?")) return;
+    saveAddresses([]);
+    refresh();
+  });
+
+  // Export
+  $("#exportBtn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(loadAddresses(), null, 2)], {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "adressen.json"; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // Import
+  $("#importFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data)) throw new Error("Ungültiges JSON");
+      // Minimalvalidierung
+      const cleaned = data
+        .filter(x => x && x.address && typeof x.lat === "number" && typeof x.lon === "number")
+        .map(x => ({ id: x.id || uid(), address: x.address, lat: x.lat, lon: x.lon }));
+      saveAddresses(cleaned);
+      refresh();
+      fitBoundsToContent();
+    } catch (e) {
+      $("#error").textContent = "Import-Fehler: " + e.message;
+    } finally {
+      e.target.value = "";
+    }
+  });
+});
+</script>
+</body>
+</html>
+
