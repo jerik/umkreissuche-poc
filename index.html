@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8" />
-  <title>Umkreissuche – PoC (Responsive, Frankfurt-Start)</title>
+  <title>Umkreissuche – PoC (Frankfurt-Start + Mobile-Fix)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link
     rel="stylesheet"
@@ -12,7 +12,8 @@
   />
   <style>
     :root {
-      --vh: 1vh;          /* wird per JS gesetzt (Mobile 100vh Fix) */
+      /* Fallback für ältere Browser; wird per JS gesetzt */
+      --vh: 1vh;
       --border: #ddd;
       --muted: #666;
     }
@@ -20,8 +21,11 @@
     html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
     body { background:#fff; color:#111; }
 
-    /* App-Container füllt Viewporthöhe (mit mobile Fix) */
+    /* App-Container füllt den sichtbaren Viewport
+       - moderne Browser: 100dvh
+       - Fallback: calc(var(--vh)*100) */
     #app {
+      height: 100dvh;
       height: calc(var(--vh) * 100);
       display: grid;
       grid-template-columns: 360px 1fr;   /* Desktop / Tablet quer */
@@ -36,6 +40,8 @@
       background: #fff;
     }
     #map { width: 100%; height: 100%; }
+    /* Sicherstellen, dass Leaflet den ganzen Platz nutzt */
+    .leaflet-container { height: 100% !important; }
 
     fieldset {
       border: 1px solid var(--border);
@@ -185,10 +191,9 @@
 <script>
 /** -------------------------
  *  Konfiguration / Seed-Daten
- *  -------------------------
- *  Ersetze SEED_ADDRESSES durch deine 3–45 Adressen.
- */
+ *  ------------------------- */
 const SEED_ADDRESSES = [
+  "EZB-Turm, Sonnemannstraße 20, 60314 Frankfurt am Main",  // <— hinzugefügt
   "Brandenburger Tor, Berlin",
   "Marienplatz, München",
   "Domplatz, Köln",
@@ -237,13 +242,14 @@ async function geocode(address){
 /** ------------- Map Setup ------------- */
 let map, userMarker, radiusCircle, markersLayer;
 function initMap(){
-  // Initial auf Frankfurt zoomen (falls kein gespeicherter Nutzerstandort)
+  // IMMER mit Frankfurt starten
   map = L.map('map', { zoomControl: true }).setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lon], DEFAULT_ZOOM);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Demo'
   }).addTo(map);
+
   markersLayer = L.layerGroup().addTo(map);
 }
 
@@ -296,7 +302,7 @@ async function ensureSeedLoaded(){
     try {
       const geo = await geocode(a);
       list.push({ id: uid(), address: a, ...geo });
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 800)); // freundlich throttlen
     } catch(e){ console.warn("Seed-Geocoding fehlgeschlagen:", a, e); }
   }
   saveAddresses(list);
@@ -370,8 +376,9 @@ function refresh(){
   updateStats(inCount, outCount);
 }
 
-/** ------------- Mobile VH Fix + Resize Handling ------------- */
+/** ------------- Viewport-Höhe / Leaflet-Resize ------------- */
 function setViewportHeightVar(){
+  // Fallback nur setzen, wenn 100dvh nicht unterstützt ist (oder als Ergänzung unkritisch)
   const vh = window.innerHeight * 0.01;
   document.documentElement.style.setProperty('--vh', `${vh}px`);
 }
@@ -383,16 +390,17 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   await ensureSeedLoaded();
 
-  // Falls Nutzerstandort gespeichert -> Karte dahin legen; sonst bleibt Frankfurt @ DEFAULT_ZOOM
+  // Frankfurt bleibt Start – nur wenn Nutzer-Position bereits gespeichert ist, zentrieren wir darauf.
   const u = getUserLoc();
-  if (u) {
-    setUserOnMap(u.lat, u.lon);
-  }
+  if (u) setUserOnMap(u.lat, u.lon);
 
   refresh();
 
-  // WICHTIG: Leaflet nach Layout-Setup einmal neu berechnen (fix für graue Bereiche beim ersten Render)
-  setTimeout(() => map.invalidateSize(), 50);
+  // Leaflet nach dem ersten Render mehrmals invalidieren (fix für iOS 1/2-Karten-Rendering)
+  const reflow = () => map && map.invalidateSize();
+  setTimeout(reflow, 50);
+  setTimeout(reflow, 250);
+  requestAnimationFrame(reflow);
 
   // Radius
   $("#radius").addEventListener("input", () => { syncRadiusInputs(); refresh(); });
@@ -430,7 +438,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       $("#newAddr").value = "";
       $("#addMsg").textContent = "Gespeichert.";
       refresh();
-      // Nicht automatisch zoomen; Nutzer behält die Kontrolle
     } catch (e) {
       $("#addMsg").textContent = "Fehler: " + e.message;
     } finally {
@@ -476,7 +483,6 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Mobile: Panel ein-/ausklappen
   const toggleBtn = $("#togglePanel");
-  const panel = $("#panel");
   let collapsed = false;
   function setCollapsed(state){
     collapsed = state;
@@ -489,7 +495,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       toggleBtn.textContent = "Panel einklappen";
       toggleBtn.setAttribute("aria-expanded", "true");
     }
-    setTimeout(() => map.invalidateSize(), 200);
+    // Nach Layoutwechsel Leaflet neu rechnen lassen
+    setTimeout(() => map.invalidateSize(), 150);
   }
   toggleBtn.addEventListener("click", () => setCollapsed(!collapsed));
 
@@ -499,6 +506,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 });
 
 /* Reagiere auf Größen-/Orientierungswechsel (iOS-Adressleiste etc.) */
+window.addEventListener('load', () => { if (window.map) setTimeout(() => map.invalidateSize(), 120); });
 window.addEventListener('resize', () => {
   setViewportHeightVar();
   if (map) setTimeout(() => map.invalidateSize(), 120);
