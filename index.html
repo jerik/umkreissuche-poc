@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Umkreissuche – PoC (Responsive)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    :root {
+      /* mobile 100vh fix – wird per JS gesetzt */
+      --vh: 1vh;
+      --border: #ddd;
+      --muted: #666;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { background:#fff; color:#111; }
+
+    /* App-Container füllt Viewporthöhe (mit mobile Fix) */
+    #app {
+      height: calc(var(--vh) * 100);
+      display: grid;
+      grid-template-columns: 360px 1fr;   /* Desktop / Tablet quer */
+      grid-template-rows: 1fr;
+    }
+
+    /* Seitenleiste / Kartenbereich */
+    #sidebar {
+      padding: 12px;
+      overflow: auto;
+      border-right: 1px solid var(--border);
+      background: #fff;
+    }
+    #map { width: 100%; height: 100%; }
+
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin: 0 0 12px;
+      padding: 8px 10px 10px;
+    }
+    legend { font-weight: 700; padding: 0 6px; }
+    label { display:block; margin: 8px 0 4px; font-weight: 600; }
+    input[type="text"], input[type="number"] {
+      width:100%; padding:12px 10px; border-radius:8px; border:1px solid var(--border); font-size: 16px;
+    }
+    input[type="range"] { width:100%; }
+    button {
+      padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc;
+      cursor: pointer; background:#f7f7f7; font-weight:600; font-size: 16px;
+      touch-action: manipulation;
+    }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .muted { color: var(--muted); font-size: 0.95em; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid var(--border); border-radius:999px; margin-left:6px; }
+    .addr-list { margin:6px 0 0; padding-left: 18px; }
+    .addr-list li { margin: 6px 0; line-height: 1.3; }
+    .inside { color: #0a7a0a; font-weight: 700; }
+    .outside { color: #777; }
+    .error { color: #b00020; margin-top: 6px; }
+    .hr { border-top:1px dashed var(--border); margin:10px 0; }
+
+    /* Mobile-Kopf für Sidebar (nur auf kleinen Screens sichtbar) */
+    .mobile-header {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .mobile-title { font-weight: 800; font-size: 18px; }
+    .ghost { background:#fff; border:1px solid var(--border); }
+
+    /* Collapsible Sidebar auf Mobile */
+    .collapse-wrap { overflow: hidden; transition: max-height .3s ease; }
+    .collapsed .collapse-wrap { max-height: 0 !important; }
+    .collapsed .collapse-shadow { display: none; }
+
+    /* Delete-Button für Listeneinträge */
+    .delBtn {
+      float:right; border: none; background: transparent; font-size: 18px; line-height: 1;
+      padding: 4px 8px; cursor: pointer; color:#444;
+    }
+
+    /* RESPONSIVE -------------------------------------------------------- */
+    @media (max-width: 960px) {
+      #app {
+        /* Statt 2 Spalten -> 2 Reihen (Sidebar oben, Karte unten) */
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      #sidebar {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .mobile-header { display: flex; }
+      /* Standard: Sidebar eingeklappt starten? -> hier offen lassen; du kannst "collapsed" im HTML setzen */
+      .collapse-wrap { max-height: 9999px; }
+    }
+
+    @media (max-width: 420px) {
+      legend { font-size: 14px; }
+      button { font-size: 15px; }
+      .addr-list { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <!-- Mobile Header -->
+    <div class="mobile-header">
+      <div class="mobile-title">Umkreissuche</div>
+      <div class="row" style="margin-left:auto;">
+        <button id="togglePanel" class="ghost" aria-expanded="true" aria-controls="panel">Panel einklappen</button>
+        <button id="locateBtnTop" class="ghost">📍</button>
+      </div>
+    </div>
+
+    <div id="panel" class="collapse-wrap">
+      <fieldset>
+        <legend>Umkreis</legend>
+
+        <label for="radius">Radius (Meter)
+          <span id="radiusValue" class="pill">3000</span>
+        </label>
+        <input id="radius" type="range" min="100" max="50000" step="100" value="3000" aria-label="Radius in Metern">
+        <div class="muted">Ziehe den Regler oder tippe einen Wert ein.</div>
+
+        <label for="radiusNum" class="muted">Direkteingabe</label>
+        <input id="radiusNum" type="number" min="100" max="50000" step="100" value="3000" inputmode="numeric" pattern="[0-9]*">
+
+        <div class="hr"></div>
+        <div class="row">
+          <button id="locateBtn">📍 Mein Standort</button>
+          <div id="locMsg" class="muted" style="align-self:center;"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Adressen</legend>
+        <label for="newAddr">Neue Adresse hinzufügen</label>
+        <input id="newAddr" type="text" placeholder="z. B. Unter den Linden 77, Berlin" autocomplete="street-address">
+
+        <div class="row">
+          <button id="addBtn">Adresse speichern</button>
+          <button id="clearBtn" title="Alle gespeicherten Adressen löschen">Alles löschen</button>
+        </div>
+        <div id="addMsg" class="muted" style="margin-top:6px;"></div>
+
+        <div class="hr"></div>
+        <div class="muted">Gespeicherte Adressen (<span id="addrCount">0</span>):</div>
+        <ul id="addrList" class="addr-list"></ul>
+
+        <div class="hr"></div>
+        <div class="row">
+          <button id="exportBtn">Export JSON</button>
+          <label for="importFile" style="align-self:center;">Import</label>
+          <input id="importFile" type="file" accept=".json">
+        </div>
+        <div class="muted" style="margin-top:6px;">Daten werden in deinem Browser (localStorage) gehalten.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Treffer</legend>
+        <div id="stats" class="muted">0 innerhalb • 0 außerhalb</div>
+      </fieldset>
+
+      <div id="error" class="error"></div>
+      <div class="collapse-shadow" style="height:4px;"></div>
+    </div>
+  </div>
+
+  <div id="map" role="application" aria-label="Karte mit Umkreis und Treffern"></div>
+</div>
+
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""
+></script>
+<script>
+/** -------------------------
+ *  Konfiguration / Seed-Daten
+ *  -------------------------
+ *  Ersetze SEED_ADDRESSES durch deine 3–45 Adressen.
+ */
+const SEED_ADDRESSES = [
+  "Brandenburger Tor, Berlin",
+  "Marienplatz, München",
+  "Domplatz, Köln",
+  "Neuer Wall 1, Hamburg"
+];
+
+const LS_KEYS = {
+  ADDRS: "poc_umkreis_addresses_v1",
+  USER:  "poc_umkreis_user_v1"
+};
+
+const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
+
+/** ------------- Utilities ------------- */
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function loadAddresses(){ const raw = localStorage.getItem(LS_KEYS.ADDRS); return raw ? JSON.parse(raw) : []; }
+function saveAddresses(list){ localStorage.setItem(LS_KEYS.ADDRS, JSON.stringify(list)); }
+function getUserLoc(){ const raw = localStorage.getItem(LS_KEYS.USER); return raw ? JSON.parse(raw) : null; }
+function setUserLoc(lat, lon){ localStorage.setItem(LS_KEYS.USER, JSON.stringify({lat, lon})); }
+
+function haversineMeters(a, b){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
+  const lat1=toRad(a.lat), lat2=toRad(b.lat);
+  const s=Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+
+/** ------------- Geocoding ------------- */
+async function geocode(address){
+  const params = new URLSearchParams({ q: address, format: "jsonv2", limit: "1", addressdetails: "0" });
+  const res = await fetch(`${NOMINATIM_URL}?${params.toString()}`);
+  if (!res.ok) throw new Error("Geocoding fehlgeschlagen ("+res.status+")");
+  const data = await res.json();
+  if (!data || !data[0]) throw new Error("Keine Treffer für Adresse");
+  return { lat:+data[0].lat, lon:+data[0].lon };
+}
+
+/** ------------- Map Setup ------------- */
+let map, userMarker, radiusCircle, markersLayer;
+function initMap(){
+  map = L.map('map', { zoomControl: true }).setView([52.52, 13.405], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Demo'
+  }).addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+}
+
+function setUserOnMap(lat, lon){
+  if (!userMarker) {
+    userMarker = L.marker([lat, lon], { title: "Mein Standort" })
+      .addTo(map)
+      .bindPopup("Mein Standort");
+  } else {
+    userMarker.setLatLng([lat, lon]);
+  }
+  drawRadius(lat, lon, +$("#radius").value);
+}
+
+function drawRadius(lat, lon, meters){
+  if (!radiusCircle) {
+    radiusCircle = L.circle([lat, lon], { radius: meters, fillOpacity: 0.1 });
+    radiusCircle.addTo(map);
+  } else {
+    radiusCircle.setLatLng([lat, lon]);
+    radiusCircle.setRadius(meters);
+  }
+}
+
+/** ------------- UI Bindings ------------- */
+function syncRadiusInputs(){
+  const r = +$("#radius").value;
+  $("#radiusValue").textContent = r;
+  $("#radiusNum").value = r;
+}
+function setRadiusFromNum(){
+  const r = +$("#radiusNum").value || 1000;
+  $("#radius").value = r;
+  syncRadiusInputs();
+  refresh();
+}
+
+/** ------------- App Logic ------------- */
+async function ensureSeedLoaded(){
+  let addrs = loadAddresses();
+  if (addrs.length) return;
+  const list = [];
+  for (const a of SEED_ADDRESSES){
+    try {
+      const geo = await geocode(a);
+      list.push({ id: uid(), address: a, ...geo });
+      await new Promise(r => setTimeout(r, 800));
+    } catch(e){ console.warn("Seed-Geocoding fehlgeschlagen:", a, e); }
+  }
+  saveAddresses(list);
+}
+
+function renderAddressList(inRangeIds = new Set()){
+  const ul = $("#addrList"); ul.innerHTML = "";
+  const list = loadAddresses();
+  $("#addrCount").textContent = list.length;
+
+  for (const it of list){
+    const li = document.createElement("li");
+    const inRange = inRangeIds.has(it.id);
+    li.innerHTML = `
+      <span class="${inRange ? "inside" : "outside"}">${inRange ? "●" : "○"}</span>
+      ${it.address}
+      <span class="muted">(${it.lat.toFixed(5)}, ${it.lon.toFixed(5)})</span>
+      <button data-id="${it.id}" class="delBtn" aria-label="Adresse löschen">✕</button>
+    `;
+    ul.appendChild(li);
+  }
+  $$(".delBtn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-id");
+      const list = loadAddresses().filter(x => x.id !== id);
+      saveAddresses(list);
+      refresh();
+    });
+  });
+}
+
+function renderMarkers(inRangeIds = new Set()){
+  markersLayer.clearLayers();
+  const list = loadAddresses();
+  for (const it of list){
+    const m = L.circleMarker([it.lat, it.lon], {
+      radius: 7,
+      color: inRangeIds.has(it.id) ? "#2e7d32" : "#777",
+      weight: 2
+    });
+    m.bindPopup(`<b>${it.address}</b><br/>${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}`);
+    markersLayer.addLayer(m);
+  }
+}
+
+function updateStats(inCount, outCount){ $("#stats").textContent = `${inCount} innerhalb • ${outCount} außerhalb`; }
+
+function fitBoundsToContent(){
+  const bounds = L.latLngBounds([]);
+  if (userMarker) bounds.extend(userMarker.getLatLng());
+  if (markersLayer && markersLayer.getLayers().length) {
+    markersLayer.getLayers().forEach(l => bounds.extend(l.getLatLng()));
+  }
+  if (bounds.isValid()) map.fitBounds(bounds.pad(0.2));
+}
+
+function refresh(){
+  $("#error").textContent = "";
+  const user = getUserLoc();
+  const r = +$("#radius").value;
+  syncRadiusInputs();
+
+  if (user) setUserOnMap(user.lat, user.lon);
+
+  const list = loadAddresses();
+  let inCount = 0, outCount = 0;
+  const inRangeIds = new Set();
+
+  if (user && list.length){
+    for (const it of list){
+      const d = haversineMeters(user, { lat: it.lat, lon: it.lon });
+      if (d <= r) { inCount++; inRangeIds.add(it.id); } else { outCount++; }
+    }
+  } else {
+    outCount = list.length;
+  }
+
+  renderMarkers(inRangeIds);
+  renderAddressList(inRangeIds);
+  updateStats(inCount, outCount);
+}
+
+/** ------------- Mobile VH Fix + Resize Handling ------------- */
+function setViewportHeightVar(){
+  const vh = window.innerHeight * 0.01;
+  document.documentElement.style.setProperty('--vh', `${vh}px`);
+}
+window.addEventListener('resize', () => {
+  setViewportHeightVar();
+  // Leaflet braucht ein invalidateSize nach Layout-Änderungen
+  if (map) setTimeout(() => map.invalidateSize(), 200);
+});
+
+/** ------------- Event Listeners ------------- */
+window.addEventListener("DOMContentLoaded", async () => {
+  setViewportHeightVar();
+
+  initMap();
+  await ensureSeedLoaded();
+
+  const u = getUserLoc();
+  if (u) setUserOnMap(u.lat, u.lon);
+
+  refresh();
+  fitBoundsToContent();
+
+  // Radius
+  $("#radius").addEventListener("input", () => { syncRadiusInputs(); refresh(); });
+  $("#radiusNum").addEventListener("change", setRadiusFromNum);
+
+  // Standort (2 Buttons: im Panel & in der Mobile-Header-Leiste)
+  function locate(){
+    const setMsg = (t)=> $("#locMsg").textContent = t;
+    setMsg("Versuche, deinen Standort zu bestimmen…");
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude, longitude } = pos.coords;
+        setUserLoc(latitude, longitude);
+        setUserOnMap(latitude, longitude);
+        fitBoundsToContent();
+        setMsg(`Standort: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+        refresh();
+      },
+      err => { setMsg("Standort abgelehnt oder nicht verfügbar."); },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }
+  $("#locateBtn").addEventListener("click", locate);
+  $("#locateBtnTop").addEventListener("click", locate);
+
+  // Adresse hinzufügen
+  $("#addBtn").addEventListener("click", async () => {
+    const addr = $("#newAddr").value.trim();
+    if (!addr) return;
+    $("#addMsg").textContent = "Geokodiere…";
+    try {
+      const { lat, lon } = await geocode(addr);
+      const list = loadAddresses();
+      list.push({ id: uid(), address: addr, lat, lon });
+      saveAddresses(list);
+      $("#newAddr").value = "";
+      $("#addMsg").textContent = "Gespeichert.";
+      refresh();
+      fitBoundsToContent();
+    } catch (e) {
+      $("#addMsg").textContent = "Fehler: " + e.message;
+    } finally {
+      setTimeout(() => { $("#addMsg").textContent = ""; }, 2500);
+    }
+  });
+
+  // Alles löschen
+  $("#clearBtn").addEventListener("click", () => {
+    if (!confirm("Wirklich alle Adressen löschen?")) return;
+    saveAddresses([]);
+    refresh();
+  });
+
+  // Export
+  $("#exportBtn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(loadAddresses(), null, 2)], {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "adressen.json"; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // Import
+  $("#importFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data)) throw new Error("Ungültiges JSON");
+      const cleaned = data
+        .filter(x => x && x.address && typeof x.lat === "number" && typeof x.lon === "number")
+        .map(x => ({ id: x.id || uid(), address: x.address, lat: x.lat, lon: x.lon }));
+      saveAddresses(cleaned);
+      refresh();
+      fitBoundsToContent();
+    } catch (e) {
+      $("#error").textContent = "Import-Fehler: " + e.message;
+    } finally {
+      e.target.value = "";
+    }
+  });
+
+  // Mobile: Panel ein-/ausklappen
+  const toggleBtn = $("#togglePanel");
+  const panel = $("#panel");
+  let collapsed = false;
+  function setCollapsed(state){
+    collapsed = state;
+    if (collapsed) {
+      $("#sidebar").classList.add("collapsed");
+      toggleBtn.textContent = "Panel ausklappen";
+      toggleBtn.setAttribute("aria-expanded", "false");
+    } else {
+      $("#sidebar").classList.remove("collapsed");
+      toggleBtn.textContent = "Panel einklappen";
+      toggleBtn.setAttribute("aria-expanded", "true");
+    }
+    // Leaflet neu berechnen lassen (wichtig auf Mobile)
+    setTimeout(() => map.invalidateSize(), 200);
+  }
+  toggleBtn.addEventListener("click", () => setCollapsed(!collapsed));
+
+  // Optional: Auf sehr kleinen Geräten beim Start einklappen
+  if (window.matchMedia("(max-width: 960px)").matches) {
+    setCollapsed(true);
+  }
+});
+</script>
+</body>
+</html>
+
