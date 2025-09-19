@@ -207,7 +207,7 @@ function refresh(){
   for(const it of list){
     const m = L.circleMarker([it.lat, it.lon], {
       radius: 6,
-      color: inRangeIds.has(it.id) ? "#ff69b4 " : "#ff0",
+      color: inRangeIds.has(it.id) ? "#ff69b4" : "#ff0",
       weight: 2
     });
     m.bindPopup(`<b>${it.address}</b><br/>${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}`);
@@ -297,4 +297,5 @@ document.addEventListener("visibilitychange", () => {
 </script>
 </body>
 </html>
+
 
