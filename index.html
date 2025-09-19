@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8" />
-  <title>Umkreissuche – PoC (Responsive)</title>
+  <title>Umkreissuche – PoC (Responsive, Frankfurt-Start)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link
     rel="stylesheet"
@@ -12,8 +12,7 @@
   />
   <style>
     :root {
-      /* mobile 100vh fix – wird per JS gesetzt */
-      --vh: 1vh;
+      --vh: 1vh;          /* wird per JS gesetzt (Mobile 100vh Fix) */
       --border: #ddd;
       --muted: #666;
     }
@@ -99,7 +98,6 @@
         border-bottom: 1px solid var(--border);
       }
       .mobile-header { display: flex; }
-      /* Standard: Sidebar eingeklappt starten? -> hier offen lassen; du kannst "collapsed" im HTML setzen */
       .collapse-wrap { max-height: 9999px; }
     }
 
@@ -118,7 +116,7 @@
       <div class="mobile-title">Umkreissuche</div>
       <div class="row" style="margin-left:auto;">
         <button id="togglePanel" class="ghost" aria-expanded="true" aria-controls="panel">Panel einklappen</button>
-        <button id="locateBtnTop" class="ghost">📍</button>
+        <button id="locateBtnTop" class="ghost" title="Mein Standort">📍</button>
       </div>
     </div>
 
@@ -204,6 +202,10 @@ const LS_KEYS = {
 
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 
+/* Startpunkt, wenn keine Nutzerlokalisierung existiert */
+const DEFAULT_CENTER = { lat: 50.1109, lon: 8.6821 }; // Frankfurt am Main
+const DEFAULT_ZOOM = 12; // gut lesbare Stadtnamen
+
 /** ------------- Utilities ------------- */
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
@@ -235,7 +237,9 @@ async function geocode(address){
 /** ------------- Map Setup ------------- */
 let map, userMarker, radiusCircle, markersLayer;
 function initMap(){
-  map = L.map('map', { zoomControl: true }).setView([52.52, 13.405], 6);
+  // Initial auf Frankfurt zoomen (falls kein gespeicherter Nutzerstandort)
+  map = L.map('map', { zoomControl: true }).setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lon], DEFAULT_ZOOM);
+
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Demo'
@@ -252,6 +256,12 @@ function setUserOnMap(lat, lon){
     userMarker.setLatLng([lat, lon]);
   }
   drawRadius(lat, lon, +$("#radius").value);
+
+  // Beim ersten Setzen des Nutzerstandorts dezent heranzoomen
+  if (!map._userZoomed) {
+    map.setView([lat, lon], 13, { animate: true });
+    map._userZoomed = true;
+  }
 }
 
 function drawRadius(lat, lon, meters){
@@ -334,15 +344,6 @@ function renderMarkers(inRangeIds = new Set()){
 
 function updateStats(inCount, outCount){ $("#stats").textContent = `${inCount} innerhalb • ${outCount} außerhalb`; }
 
-function fitBoundsToContent(){
-  const bounds = L.latLngBounds([]);
-  if (userMarker) bounds.extend(userMarker.getLatLng());
-  if (markersLayer && markersLayer.getLayers().length) {
-    markersLayer.getLayers().forEach(l => bounds.extend(l.getLatLng()));
-  }
-  if (bounds.isValid()) map.fitBounds(bounds.pad(0.2));
-}
-
 function refresh(){
   $("#error").textContent = "";
   const user = getUserLoc();
@@ -374,24 +375,24 @@ function setViewportHeightVar(){
   const vh = window.innerHeight * 0.01;
   document.documentElement.style.setProperty('--vh', `${vh}px`);
 }
-window.addEventListener('resize', () => {
-  setViewportHeightVar();
-  // Leaflet braucht ein invalidateSize nach Layout-Änderungen
-  if (map) setTimeout(() => map.invalidateSize(), 200);
-});
 
 /** ------------- Event Listeners ------------- */
 window.addEventListener("DOMContentLoaded", async () => {
   setViewportHeightVar();
-
   initMap();
+
   await ensureSeedLoaded();
 
+  // Falls Nutzerstandort gespeichert -> Karte dahin legen; sonst bleibt Frankfurt @ DEFAULT_ZOOM
   const u = getUserLoc();
-  if (u) setUserOnMap(u.lat, u.lon);
+  if (u) {
+    setUserOnMap(u.lat, u.lon);
+  }
 
   refresh();
-  fitBoundsToContent();
+
+  // WICHTIG: Leaflet nach Layout-Setup einmal neu berechnen (fix für graue Bereiche beim ersten Render)
+  setTimeout(() => map.invalidateSize(), 50);
 
   // Radius
   $("#radius").addEventListener("input", () => { syncRadiusInputs(); refresh(); });
@@ -406,7 +407,6 @@ window.addEventListener("DOMContentLoaded", async () => {
         const { latitude, longitude } = pos.coords;
         setUserLoc(latitude, longitude);
         setUserOnMap(latitude, longitude);
-        fitBoundsToContent();
         setMsg(`Standort: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
         refresh();
       },
@@ -430,7 +430,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       $("#newAddr").value = "";
       $("#addMsg").textContent = "Gespeichert.";
       refresh();
-      fitBoundsToContent();
+      // Nicht automatisch zoomen; Nutzer behält die Kontrolle
     } catch (e) {
       $("#addMsg").textContent = "Fehler: " + e.message;
     } finally {
@@ -467,7 +467,6 @@ window.addEventListener("DOMContentLoaded", async () => {
         .map(x => ({ id: x.id || uid(), address: x.address, lat: x.lat, lon: x.lon }));
       saveAddresses(cleaned);
       refresh();
-      fitBoundsToContent();
     } catch (e) {
       $("#error").textContent = "Import-Fehler: " + e.message;
     } finally {
@@ -490,17 +489,30 @@ window.addEventListener("DOMContentLoaded", async () => {
       toggleBtn.textContent = "Panel einklappen";
       toggleBtn.setAttribute("aria-expanded", "true");
     }
-    // Leaflet neu berechnen lassen (wichtig auf Mobile)
     setTimeout(() => map.invalidateSize(), 200);
   }
   toggleBtn.addEventListener("click", () => setCollapsed(!collapsed));
 
-  // Optional: Auf sehr kleinen Geräten beim Start einklappen
   if (window.matchMedia("(max-width: 960px)").matches) {
     setCollapsed(true);
+  }
+});
+
+/* Reagiere auf Größen-/Orientierungswechsel (iOS-Adressleiste etc.) */
+window.addEventListener('resize', () => {
+  setViewportHeightVar();
+  if (map) setTimeout(() => map.invalidateSize(), 120);
+});
+window.addEventListener('orientationchange', () => {
+  setViewportHeightVar();
+  if (map) setTimeout(() => map.invalidateSize(), 150);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && map) {
+    setViewportHeightVar();
+    setTimeout(() => map.invalidateSize(), 120);
   }
 });
 </script>
 </body>
 </html>
-
