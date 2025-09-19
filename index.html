@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8" />
-  <title>Umkreissuche – PoC v7)</title>
+  <title>Umkreissuche – PoC v8</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <style>
@@ -11,10 +11,9 @@
     html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
     body{background:#fff;color:#111}
 
-    /* Karte soll den sichtbaren Bereich voll füllen (inkl. iOS-UI) */
     #app{
-      height:100dvh;                  /* moderne Browser */
-      height:calc(var(--vh)*100);     /* Fallback */
+      height:100dvh;
+      height:calc(var(--vh)*100);
       display:grid;
       grid-template-columns:360px 1fr;
       grid-template-rows:1fr;
@@ -42,261 +41,144 @@
     .quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
     .quick button{padding:6px 9px;border-radius:999px}
 
+    /* Mobile Header */
+    .mobile-header{display:none;align-items:center;justify-content:space-between;margin-bottom:8px}
+    .mobile-title{font-weight:800;font-size:18px}
+
+    .collapse-wrap{overflow:hidden;transition:max-height .3s ease}
+    .collapsed .collapse-wrap{max-height:0 !important;padding:0 !important}
+    .collapsed #sidebar{padding-bottom:0}
+
     @media (max-width:960px){
       #app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
       #sidebar{border-right:none;border-bottom:1px solid var(--border)}
+      .mobile-header{display:flex}
     }
   </style>
 </head>
 <body>
 <div id="app">
   <div id="sidebar">
-    <fieldset>
-      <legend>Umkreis</legend>
+    <div class="mobile-header">
+      <div class="mobile-title">Umkreissuche</div>
+      <button id="togglePanel">Panel einklappen</button>
+    </div>
 
-      <label for="radius">Radius (Kilometer)
-        <span id="radiusValue" class="pill">10</span>
-      </label>
-      <input id="radius" type="range" min="1" max="150" step="1" value="10" list="ticks">
-      <datalist id="ticks">
-        <option value="1"></option><option value="5"></option><option value="10"></option>
-        <option value="25"></option><option value="50"></option><option value="100"></option><option value="150"></option>
-      </datalist>
+    <div id="panel" class="collapse-wrap">
+      <fieldset>
+        <legend>Umkreis</legend>
+        <label for="radius">Radius (Kilometer)
+          <span id="radiusValue" class="pill">10</span>
+        </label>
+        <input id="radius" type="range" min="1" max="150" step="1" value="10">
+        <div class="quick">
+          <button data-km="5">5 km</button><button data-km="10">10 km</button>
+          <button data-km="25">25 km</button><button data-km="50">50 km</button>
+          <button data-km="100">100 km</button><button data-km="150">150 km</button>
+        </div>
+        <label for="radiusNum" class="muted">Direkteingabe (km)</label>
+        <input id="radiusNum" type="number" min="1" max="150" step="1" value="10">
+        <div class="hr"></div>
+        <button id="locateBtn">📍 Mein Standort</button>
+        <div id="locMsg" class="muted"></div>
+      </fieldset>
 
-      <div class="quick">
-        <button data-km="5">5 km</button>
-        <button data-km="10">10 km</button>
-        <button data-km="25">25 km</button>
-        <button data-km="50">50 km</button>
-        <button data-km="100">100 km</button>
-        <button data-km="150">150 km</button>
-      </div>
+      <fieldset>
+        <legend>Adressen</legend>
+        <input id="newAddr" type="text" placeholder="Neue Adresse eingeben">
+        <div class="row"><button id="addBtn">Adresse speichern</button><button id="clearBtn">Alles löschen</button></div>
+        <div id="addMsg" class="muted"></div>
+        <div class="hr"></div>
+        <div class="muted">Gespeicherte Adressen (<span id="addrCount">0</span>):</div>
+        <ul id="addrList" class="addr-list"></ul>
+      </fieldset>
 
-      <label for="radiusNum" class="muted">Direkteingabe (km)</label>
-      <input id="radiusNum" type="number" min="1" max="150" step="1" value="10" inputmode="numeric" pattern="[0-9]*">
+      <fieldset>
+        <legend>Treffer</legend>
+        <div id="stats" class="muted">0 innerhalb • 0 außerhalb</div>
+      </fieldset>
 
-      <div class="hr"></div>
-      <button id="locateBtn">📍 Mein Standort</button>
-      <div id="locMsg" class="muted"></div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Adressen</legend>
-      <input id="newAddr" type="text" placeholder="Neue Adresse eingeben">
-      <div class="row">
-        <button id="addBtn">Adresse speichern</button>
-        <button id="clearBtn">Alles löschen</button>
-      </div>
-      <div id="addMsg" class="muted"></div>
-      <div class="hr"></div>
-      <div class="muted">Gespeicherte Adressen (<span id="addrCount">0</span>):</div>
-      <ul id="addrList" class="addr-list"></ul>
-    </fieldset>
-
-    <fieldset>
-      <legend>Treffer</legend>
-      <div id="stats" class="muted">0 innerhalb • 0 außerhalb</div>
-    </fieldset>
-
-    <div id="error" class="error"></div>
+      <div id="error" class="error"></div>
+    </div>
   </div>
-
   <div id="map"></div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-/* ---------------------- Config ---------------------- */
 const SEED_ADDRESSES = [
   "EZB-Turm, Sonnemannstraße 20, 60314 Frankfurt am Main",
-  "Brandenburger Tor, Berlin",
-  "Marienplatz, München",
-  "Domplatz, Köln",
-  "Neuer Wall 1, Hamburg"
+  "Brandenburger Tor, Berlin","Marienplatz, München","Domplatz, Köln","Neuer Wall 1, Hamburg"
 ];
-const LS_KEYS = { ADDRS:"poc_umkreis_addresses_v1" }; // (Nutzerstandort ist absichtlich NICHT persistent)
+const LS_KEYS = {ADDRS:"poc_umkreis_addresses_v1"};
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
-const DEFAULT_CENTER = { lat: 50.1109, lon: 8.6821 }; // Frankfurt
+const DEFAULT_CENTER = {lat:50.1109,lon:8.6821};
 const DEFAULT_ZOOM = 12;
 
-/* ---------------------- Helpers ---------------------- */
 const $ = s => document.querySelector(s);
-function uid(){ return Math.random().toString(36).slice(2,10); }
-function loadAddresses(){ const raw=localStorage.getItem(LS_KEYS.ADDRS); return raw?JSON.parse(raw):[]; }
-function saveAddresses(list){ localStorage.setItem(LS_KEYS.ADDRS, JSON.stringify(list)); }
-async function geocode(address){
-  const p = new URLSearchParams({ q: address, format: "jsonv2", limit: "1" });
-  const r = await fetch(`${NOMINATIM_URL}?${p.toString()}`);
-  if(!r.ok) throw new Error("Geocoding fehlgeschlagen");
-  const data = await r.json();
-  if(!data[0]) throw new Error("Keine Treffer");
-  return { lat:+data[0].lat, lon:+data[0].lon };
+function uid(){return Math.random().toString(36).slice(2,10);}
+function loadAddresses(){const raw=localStorage.getItem(LS_KEYS.ADDRS);return raw?JSON.parse(raw):[];}
+function saveAddresses(l){localStorage.setItem(LS_KEYS.ADDRS,JSON.stringify(l));}
+async function geocode(addr){
+  const p=new URLSearchParams({q:addr,format:"jsonv2",limit:"1"});
+  const r=await fetch(`${NOMINATIM_URL}?${p.toString()}`);const d=await r.json();
+  if(!d[0]) throw new Error("Keine Treffer");return{lat:+d[0].lat,lon:+d[0].lon};
 }
 
-/* ---------------------- State ---------------------- */
-let map, markersLayer, userMarker, radiusCircle;
-let center = { ...DEFAULT_CENTER };       // Start immer Frankfurt
-let userLocated = false;                  // wird erst nach Button-Klick true
+let map,markersLayer,userMarker,radiusCircle;
+let center={...DEFAULT_CENTER};let userLocated=false;
 
-/* ---------------------- Map ---------------------- */
 function initMap(){
-  map = L.map("map").setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lon], DEFAULT_ZOOM);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:19, attribution:"© OSM" }).addTo(map);
-  markersLayer = L.layerGroup().addTo(map);
-  // Startmarker & Kreis für Frankfurt anzeigen
-  setCenterOnMap(center.lat, center.lon, /*initial=*/true);
+  map=L.map("map").setView([DEFAULT_CENTER.lat,DEFAULT_CENTER.lon],DEFAULT_ZOOM);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OSM"}).addTo(map);
+  markersLayer=L.layerGroup().addTo(map);
+  setCenterOnMap(center.lat,center.lon,true);
 }
-
-function setCenterOnMap(lat, lon, initial=false){
-  if(!userMarker){
-    userMarker = L.marker([lat, lon]).addTo(map)
-      .bindPopup(initial ? "Startpunkt: Frankfurt" : "Mein Standort");
-  } else {
-    userMarker.setLatLng([lat, lon]);
-    userMarker.setPopupContent(initial ? "Startpunkt: Frankfurt" : "Mein Standort");
-  }
-  drawRadius(lat, lon, +$("#radius").value * 1000);
+function setCenterOnMap(lat,lon,initial=false){
+  if(!userMarker){userMarker=L.marker([lat,lon]).addTo(map).bindPopup(initial?"Startpunkt: Frankfurt":"Mein Standort");}
+  else{userMarker.setLatLng([lat,lon]);userMarker.setPopupContent(initial?"Startpunkt: Frankfurt":"Mein Standort");}
+  drawRadius(lat,lon,+$("#radius").value*1000);
 }
+function drawRadius(lat,lon,m){if(!radiusCircle){radiusCircle=L.circle([lat,lon],{radius:m,fillOpacity:0.1}).addTo(map);}else{radiusCircle.setLatLng([lat,lon]);radiusCircle.setRadius(m);}}
 
-function drawRadius(lat, lon, meters){
-  if(!radiusCircle){
-    radiusCircle = L.circle([lat, lon], { radius: meters, fillOpacity: 0.1 }).addTo(map);
-  } else {
-    radiusCircle.setLatLng([lat, lon]);
-    radiusCircle.setRadius(meters);
-  }
-}
-
-/* ---------------------- Seed-Adressen ---------------------- */
 async function ensureSeedLoaded(){
-  let list = loadAddresses();
-  const existing = new Set(list.map(x => x.address));
-  for(const a of SEED_ADDRESSES){
-    if(!existing.has(a)){
-      try{
-        const geo = await geocode(a);
-        list.push({ id: uid(), address: a, ...geo });
-        await new Promise(r => setTimeout(r, 500)); // freundlich throttlen
-      }catch(e){ console.warn("Seed-Fehler:", a, e); }
-    }
-  }
+  let list=loadAddresses();const exist=new Set(list.map(x=>x.address));
+  for(const a of SEED_ADDRESSES){if(!exist.has(a)){try{const g=await geocode(a);list.push({id:uid(),address:a,...g});}catch(e){}}}
   saveAddresses(list);
 }
 
-/* ---------------------- Render ---------------------- */
 function refresh(){
-  const km = +$("#radius").value;
-  $("#radiusValue").textContent = km;
-  $("#radiusNum").value = km;
-
-  // Kreis auf aktuellem Zentrum (Frankfurt oder Nutzerstandort)
-  setCenterOnMap(center.lat, center.lon, !userLocated);
-
-  const list = loadAddresses();
-  let inCount = 0, outCount = 0;
-  const inRangeIds = new Set();
-
-  if(list.length){
-    for(const it of list){
-      const d = map.distance([center.lat, center.lon], [it.lat, it.lon]);
-      if(d <= km*1000){ inCount++; inRangeIds.add(it.id); } else { outCount++; }
-    }
-  }
-
+  const km=+$("#radius").value;$("#radiusValue").textContent=km;$("#radiusNum").value=km;
+  setCenterOnMap(center.lat,center.lon,!userLocated);
+  const list=loadAddresses();let inC=0,outC=0,inIds=new Set();
+  for(const it of list){const d=map.distance([center.lat,center.lon],[it.lat,it.lon]);if(d<=km*1000){inC++;inIds.add(it.id);}else outC++;}
   markersLayer.clearLayers();
   for(const it of list){
-    const m = L.circleMarker([it.lat, it.lon], {
-      radius: 6,
-      color: inRangeIds.has(it.id) ? "#ff69b4" : "#f00",
-      weight: 2
-    });
-    m.bindPopup(`<b>${it.address}</b><br/>${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}`);
-    markersLayer.addLayer(m);
-  }
-
-  $("#addrCount").textContent = list.length;
-  $("#addrList").innerHTML = list.map(it => {
-    const inR = inRangeIds.has(it.id);
-    return `<li><span class="${inR ? "inside":"outside"}">${inR?"●":"○"}</span> ${it.address}</li>`;
-  }).join("");
-
-  $("#stats").textContent = `${inCount} innerhalb • ${outCount} außerhalb`;
+    const m=L.circleMarker([it.lat,it.lon],{radius:6,color:inIds.has(it.id)?"#ff69b4":"#f00",weight:2});
+    m.bindPopup(`<b>${it.address}</b>`);markersLayer.addLayer(m);}
+  $("#addrCount").textContent=list.length;
+  $("#addrList").innerHTML=list.map(it=>`<li>${inIds.has(it.id)?"●":"○"} ${it.address}</li>`).join("");
+  $("#stats").textContent=`${inC} innerhalb • ${outC} außerhalb`;
 }
 
-/* ---------------------- Events ---------------------- */
-function setViewportHeightVar(){
-  const vh = window.innerHeight * 0.01;
-  document.documentElement.style.setProperty('--vh', `${vh}px`);
-}
+window.addEventListener("DOMContentLoaded",async()=>{
+  initMap();await ensureSeedLoaded();refresh();
+  $("#radius").addEventListener("input",refresh);
+  $("#radiusNum").addEventListener("change",()=>{$("#radius").value=$("#radiusNum").value;refresh();});
+  document.querySelectorAll(".quick button").forEach(b=>b.addEventListener("click",()=>{$("#radius").value=b.dataset.km;refresh();}));
+  $("#locateBtn").addEventListener("click",()=>{navigator.geolocation.getCurrentPosition(pos=>{center={lat:pos.coords.latitude,lon:pos.coords.longitude};userLocated=true;map.setView([center.lat,center.lon],13);refresh();},err=>{$("#locMsg").textContent="Fehler: "+err.message;});});
+  $("#addBtn").addEventListener("click",async()=>{const addr=$("#newAddr").value.trim();if(!addr)return;try{const {lat,lon}=await geocode(addr);const l=loadAddresses();l.push({id:uid(),address:addr,lat,lon});saveAddresses(l);$("#newAddr").value="";refresh();}catch(e){$("#addMsg").textContent="Fehler: "+e.message;}});
+  $("#clearBtn").addEventListener("click",()=>{if(confirm("Alles löschen?")){saveAddresses([]);refresh();}});
 
-window.addEventListener("DOMContentLoaded", async () => {
-  setViewportHeightVar();
-  initMap();
-  await ensureSeedLoaded();
-  refresh();
-
-  // Mehrfach invalidieren (fix graue Hälfte auf iOS)
-  const reflow = () => map && map.invalidateSize();
-  setTimeout(reflow, 50); setTimeout(reflow, 250); requestAnimationFrame(reflow);
-
-  // Radius-Slider & Zahl
-  $("#radius").addEventListener("input", refresh);
-  $("#radiusNum").addEventListener("change", () => { $("#radius").value = $("#radiusNum").value; refresh(); });
-
-  // Schnellwahl-Buttons
-  document.querySelectorAll(".quick button").forEach(btn=>{
-    btn.addEventListener("click", () => { const v = btn.getAttribute("data-km"); $("#radius").value = v; refresh(); });
+  // Mobile Panel Toggle
+  const toggle=$("#togglePanel"), sidebar=$("#sidebar");
+  toggle.addEventListener("click",()=>{
+    const c=sidebar.classList.contains("collapsed");
+    if(c){sidebar.classList.remove("collapsed");toggle.textContent="Panel einklappen";}
+    else{sidebar.classList.add("collapsed");toggle.textContent="Panel ausklappen";}
+    setTimeout(()=>map.invalidateSize(),200);
   });
-
-  // Standort aktiv vom Nutzer holen – ab dann NICHT mehr Frankfurt
-  $("#locateBtn").addEventListener("click", () => {
-    $("#locMsg").textContent = "Bestimme Standort…";
-    navigator.geolocation.getCurrentPosition(pos => {
-      const { latitude, longitude } = pos.coords;
-      center = { lat: latitude, lon: longitude };
-      userLocated = true;
-      map.setView([center.lat, center.lon], 13);
-      $("#locMsg").textContent = `Standort gesetzt.`;
-      refresh();
-    }, err => {
-      $("#locMsg").textContent = "Standort abgelehnt oder nicht verfügbar.";
-    }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
-  });
-
-  // Adresse hinzufügen
-  $("#addBtn").addEventListener("click", async () => {
-    const addr = $("#newAddr").value.trim(); if(!addr) return;
-    $("#addMsg").textContent = "Geokodiere…";
-    try{
-      const { lat, lon } = await geocode(addr);
-      const list = loadAddresses();
-      list.push({ id: uid(), address: addr, lat, lon });
-      saveAddresses(list);
-      $("#newAddr").value = "";
-      $("#addMsg").textContent = "Gespeichert.";
-      refresh();
-    }catch(e){ $("#addMsg").textContent = "Fehler: " + e.message; }
-    finally{ setTimeout(()=> $("#addMsg").textContent="", 2000); }
-  });
-
-  // Alles löschen
-  $("#clearBtn").addEventListener("click", () => {
-    if(confirm("Wirklich alle Adressen löschen?")){
-      saveAddresses([]); refresh();
-    }
-  });
-});
-
-window.addEventListener("resize", () => { setViewportHeightVar(); if(map) setTimeout(()=>map.invalidateSize(), 120); });
-window.addEventListener("orientationchange", () => { setViewportHeightVar(); if(map) setTimeout(()=>map.invalidateSize(), 150); });
-document.addEventListener("visibilitychange", () => {
-  if(document.visibilityState === "visible" && map){
-    setViewportHeightVar(); setTimeout(()=>map.invalidateSize(), 120);
-  }
 });
 </script>
 </body>
 </html>
-
-
-
